@@ -42,7 +42,6 @@ class AppState {
         learningLanguage = null,
         level = null,
         completedChapters = const <int>{},
-        // ✅ 1 = domyślny avatar
         avatarId = 1;
 
   AppState copyWith({
@@ -101,6 +100,24 @@ class AppStateNotifier extends StateNotifier<AppState> {
     return raw.map((e) => int.tryParse(e)).whereType<int>().toSet();
   }
 
+  String? _bestNickname({
+    required User? user,
+    required String? localNick,
+  }) {
+    final displayName = user?.displayName?.trim();
+
+    if (displayName != null && displayName.isNotEmpty) {
+      return displayName;
+    }
+
+    final local = localNick?.trim();
+    if (local != null && local.isNotEmpty) {
+      return local;
+    }
+
+    return null;
+  }
+
   Future<void> _init() async {
     await loadFromStorage();
     _authSub = FirebaseAuth.instance.authStateChanges().listen(_onAuthChanged);
@@ -115,14 +132,10 @@ class AppStateNotifier extends StateNotifier<AppState> {
   Future<void> _onAuthChanged(User? user) async {
     final storage = await _ref.read(storageProvider.future);
 
-    final localNick = storage.nickname;
-    final displayName = user?.displayName;
-
     final lvl = _normLevel(storage.level);
     final completed = _parseChapters(storage.getCompletedChaptersForLevel(lvl));
 
     final uid = user?.uid;
-    // ✅ 1 = domyślny avatar gdy brak uid
     final avatar = (uid == null) ? 1 : storage.getAvatarIdForUid(uid);
 
     state = state.copyWith(
@@ -131,7 +144,10 @@ class AppStateNotifier extends StateNotifier<AppState> {
       email: user?.email,
       nickname: user == null
           ? null
-          : (displayName?.trim().isNotEmpty == true ? displayName!.trim() : localNick),
+          : _bestNickname(
+              user: user,
+              localNick: storage.nickname,
+            ),
       learningLanguage: storage.learningLanguage,
       level: storage.level,
       completedChapters: completed,
@@ -147,9 +163,6 @@ class AppStateNotifier extends StateNotifier<AppState> {
     final lvl = _normLevel(storage.level);
     final completed = _parseChapters(storage.getCompletedChaptersForLevel(lvl));
 
-    final localNick = storage.nickname;
-    final displayName = user?.displayName;
-
     final uid = user?.uid;
     final avatar = (uid == null) ? 1 : storage.getAvatarIdForUid(uid);
 
@@ -160,7 +173,10 @@ class AppStateNotifier extends StateNotifier<AppState> {
       email: user?.email,
       nickname: user == null
           ? null
-          : (displayName?.trim().isNotEmpty == true ? displayName!.trim() : localNick),
+          : _bestNickname(
+              user: user,
+              localNick: storage.nickname,
+            ),
       learningLanguage: storage.learningLanguage,
       level: storage.level,
       completedChapters: completed,
@@ -180,7 +196,12 @@ class AppStateNotifier extends StateNotifier<AppState> {
     state = state.copyWith(
       isLoggedIn: user != null,
       email: user?.email,
-      nickname: user?.displayName?.trim().isNotEmpty == true ? user!.displayName!.trim() : storage.nickname,
+      nickname: user == null
+          ? null
+          : _bestNickname(
+              user: user,
+              localNick: storage.nickname,
+            ),
       needsOnboarding: user != null && !storage.onboardingDone,
       learningLanguage: storage.learningLanguage,
       level: storage.level,
@@ -198,11 +219,11 @@ class AppStateNotifier extends StateNotifier<AppState> {
     await storage.clearAllCompletedChapters();
 
     final displayName = user?.displayName?.trim();
+
     if (displayName != null && displayName.isNotEmpty) {
       await storage.setNickname(displayName);
     }
 
-    // ✅ nowy user dostaje domyślny avatar (1)
     if (user != null) {
       await storage.setAvatarIdForUid(user.uid, 1);
     }
@@ -210,7 +231,9 @@ class AppStateNotifier extends StateNotifier<AppState> {
     state = state.copyWith(
       isLoggedIn: user != null,
       email: user?.email,
-      nickname: displayName?.isNotEmpty == true ? displayName : storage.nickname,
+      nickname: displayName != null && displayName.isNotEmpty
+          ? displayName
+          : storage.nickname,
       learningLanguage: null,
       level: null,
       completedChapters: <int>{},
@@ -271,10 +294,24 @@ class AppStateNotifier extends StateNotifier<AppState> {
     final trimmed = nick.trim();
     if (trimmed.isEmpty) return;
 
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user != null) {
+      await user.updateDisplayName(trimmed);
+      await user.reload();
+    }
+
     final storage = await _ref.read(storageProvider.future);
     await storage.setNickname(trimmed);
 
-    state = state.copyWith(nickname: trimmed);
+    final refreshedUser = FirebaseAuth.instance.currentUser;
+    final firebaseNick = refreshedUser?.displayName?.trim();
+
+    state = state.copyWith(
+      nickname: firebaseNick != null && firebaseNick.isNotEmpty
+          ? firebaseNick
+          : trimmed,
+    );
   }
 
   Future<void> markChapterCompleted(int chapter) async {
@@ -284,7 +321,10 @@ class AppStateNotifier extends StateNotifier<AppState> {
     final updated = {...state.completedChapters, chapter};
 
     final storage = await _ref.read(storageProvider.future);
-    await storage.setCompletedChaptersForLevel(lvl, updated.map((e) => e.toString()).toList());
+    await storage.setCompletedChaptersForLevel(
+      lvl,
+      updated.map((e) => e.toString()).toList(),
+    );
 
     state = state.copyWith(completedChapters: updated);
   }
@@ -308,7 +348,8 @@ class AppStateNotifier extends StateNotifier<AppState> {
     await storage.setLevel(next);
     await storage.setOnboardingDone(true);
 
-    final completedNext = _parseChapters(storage.getCompletedChaptersForLevel(next));
+    final completedNext =
+        _parseChapters(storage.getCompletedChaptersForLevel(next));
 
     state = state.copyWith(
       level: next,
