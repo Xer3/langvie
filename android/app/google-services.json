@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "446843152706",
+    "project_id": "langvie",
+    "storage_bucket": "langvie.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:446843152706:android:5f21fdcd144256748f80db",
+        "android_client_info": {
+          "package_name": "com.example.langvie"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBWMqfdT92hQHYtigIDQL0NrUxHbWEPUtQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

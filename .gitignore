@@ -1,0 +1,133 @@
+# =========================================================
+# Miscellaneous
+# =========================================================
+
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+Thumbs.db
+
+.atom/
+.build/
+.buildlog/
+.history/
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# =========================================================
+# Secrets / local environment
+# =========================================================
+
+.env
+.env.*
+!.env.example
+
+local.properties
+android/local.properties
+
+# Release signing / private keys
+*.jks
+*.keystore
+key.properties
+android/key.properties
+
+# =========================================================
+# IntelliJ / Android Studio / VS Code
+# =========================================================
+
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VS Code można commitować, ale tutaj ignorujemy, żeby repo było czystsze
+.vscode/
+
+# =========================================================
+# Flutter / Dart / Pub
+# =========================================================
+
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+coverage/
+
+**/doc/api/
+**/ios/Flutter/.last_build_id
+
+# Flutter generated symbolication / obfuscation files
+app.*.symbols
+app.*.map.json
+
+# =========================================================
+# Android build outputs
+# =========================================================
+
+android/.gradle/
+android/app/debug/
+android/app/profile/
+android/app/release/
+
+# =========================================================
+# iOS / macOS generated files
+# =========================================================
+
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Flutter/ephemeral/
+
+macos/Pods/
+macos/.symlinks/
+macos/Flutter/ephemeral/
+
+# =========================================================
+# Windows / Linux Flutter generated files
+# =========================================================
+
+windows/flutter/ephemeral/
+linux/flutter/ephemeral/
+
+# =========================================================
+# Firebase
+# =========================================================
+
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+firestore-debug.log
+ui-debug.log
+
+.firebaserc.local
+
+# Firebase Functions
+functions/node_modules/
+functions/.runtimeconfig.json
+functions/lib/
+functions/firebase-debug.log
+functions/firebase-debug.*.log
+
+# =========================================================
+# Node / npm
+# =========================================================
+
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# =========================================================
+# Temporary files
+# =========================================================
+
+*.tmp
+*.temp
+*.bak
+*.old
