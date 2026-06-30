@@ -1,6 +1,8 @@
 # Langvie
 
-Langvie to aplikacja mobilna do nauki języka angielskiego przygotowana jako projekt inżynierski. Aplikacja umożliwia rejestrację i logowanie użytkownika, wykonanie testu poziomującego, korzystanie z fiszek, śledzenie profilu użytkownika oraz rozmowę z asystentem AI wspierającym naukę języka.
+Langvie to aplikacja mobilna do nauki języka angielskiego przygotowana jako projekt inżynierski. Aplikacja umożliwia rejestrację i logowanie użytkownika, wykonanie testu poziomującego, korzystanie z lekcji, fiszek, profilu użytkownika oraz asystenta AI wspierającego naukę języka.
+
+Projekt wykorzystuje Firebase do obsługi kont użytkowników, przechowywania danych aplikacji oraz komunikacji z modelem AI przez funkcję backendową.
 
 ## Główne funkcjonalności
 
@@ -8,13 +10,17 @@ Langvie to aplikacja mobilna do nauki języka angielskiego przygotowana jako pro
 * resetowanie hasła przez email,
 * onboarding użytkownika,
 * test poziomujący z pytaniami zamkniętymi i otwartymi,
-* system poziomu użytkownika,
-* fiszki językowe z możliwością dodawania i edycji,
+* system poziomów użytkownika,
+* lekcje językowe z egzaminami zaliczeniowymi,
+* zapis postępu lekcji i statystyk per użytkownik,
+* fiszki językowe z możliwością dodawania, edycji i usuwania,
+* foldery fiszek,
 * tryb nauki fiszek,
-* profil użytkownika z awatarem,
+* profil użytkownika z nickiem i awatarem,
 * asystent AI do nauki języka angielskiego,
-* przechowywanie danych w Firebase,
-* obsługa zapytań AI przez Firebase Cloud Functions.
+* przechowywanie danych użytkownika w Cloud Firestore,
+* obsługa zapytań AI przez Firebase Cloud Functions,
+* bezpieczne przechowywanie klucza OpenAI API po stronie backendu.
 
 ## Technologie
 
@@ -64,7 +70,7 @@ Aplikację można uruchamiać również na emulatorze Androida skonfigurowanym w
 1. Sklonuj repozytorium:
 
 ```bash
-git clone LINK_DO_REPOZYTORIUM
+git clone https://github.com/Xer3/langvie.git
 cd langvie
 ```
 
@@ -102,7 +108,7 @@ flutter run -d ID_URZADZENIA
 
 ## Firebase
 
-Projekt korzysta z Firebase do obsługi logowania, resetowania hasła, przechowywania danych oraz funkcji backendowych.
+Projekt korzysta z Firebase do obsługi logowania, resetowania hasła, przechowywania danych użytkownika oraz funkcji backendowych.
 
 Wykorzystywane usługi Firebase:
 
@@ -112,6 +118,75 @@ Wykorzystywane usługi Firebase:
 * Firebase Secret Manager.
 
 Pliki konfiguracyjne Firebase dla aplikacji mobilnej zostały wygenerowane przy użyciu FlutterFire CLI.
+
+## Struktura danych w Cloud Firestore
+
+Dane aplikacji są przechowywane per użytkownik na podstawie jego UID z Firebase Authentication.
+
+Przykładowa struktura:
+
+```txt
+users/{uid}
+  avatarId
+  completedChaptersA
+  completedChaptersB
+  completedChaptersC
+  email
+  learningLanguage
+  level
+  nickname
+  onboardingDone
+  createdAt
+  updatedAt
+
+users/{uid}/flashcardFolders/{folderId}
+  id
+  name
+  createdAt
+
+users/{uid}/flashcards/{cardId}
+  id
+  front
+  back
+  folderId
+  imagePath
+  createdAt
+```
+
+Dzięki takiej strukturze każdy użytkownik posiada własne dane, takie jak avatar, poziom, postęp lekcji, statystyki, foldery fiszek oraz fiszki.
+
+Statystyki użytkownika są wyliczane na podstawie zapisanych ukończonych lekcji:
+
+```txt
+completedChaptersA
+completedChaptersB
+completedChaptersC
+```
+
+## Reguły bezpieczeństwa Firestore
+
+Dostęp do danych w Firestore jest ograniczony do zalogowanego użytkownika. Użytkownik może czytać i zapisywać wyłącznie własny dokument oraz jego podkolekcje.
+
+Przykładowe reguły:
+
+```js
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /users/{userId} {
+      allow read, write: if request.auth != null
+                         && request.auth.uid == userId;
+
+      match /{document=**} {
+        allow read, write: if request.auth != null
+                           && request.auth.uid == userId;
+      }
+    }
+  }
+}
+```
 
 ## Asystent AI
 
@@ -159,6 +234,12 @@ firebase deploy --only functions:aiChat
 lib/features/ai_assistant/openai_client.dart
 ```
 
+## Ograniczenia
+
+Aktualna wersja aplikacji zapisuje tekstowe dane użytkownika, postępy, fiszki i foldery fiszek w Cloud Firestore.
+
+W przypadku fiszek z obrazkiem aplikacja zapisuje lokalną ścieżkę do pliku `imagePath`. Pełna synchronizacja obrazków między urządzeniami wymagałaby dodatkowej integracji z Firebase Storage.
+
 ## Struktura projektu
 
 Najważniejsze foldery projektu:
@@ -171,8 +252,10 @@ lib/
     auth/
     flashcards/
     home/
+    lessons/
     onboarding/
-    profile/
+    settings/
+    splash/
   shared/
 
 functions/
@@ -188,6 +271,8 @@ W repozytorium nie należy umieszczać plików zawierających prywatne klucze AP
 ```
 
 Klucz OpenAI API powinien być przechowywany wyłącznie jako sekret po stronie Firebase Cloud Functions.
+
+Pliki takie jak `.env`, `build/`, `.dart_tool/` oraz `functions/node_modules/` są ignorowane przez `.gitignore`.
 
 ## Autor
 
