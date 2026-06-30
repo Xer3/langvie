@@ -1,4 +1,6 @@
 import 'dart:convert';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'flashcard_model.dart';
@@ -15,48 +17,172 @@ class FlashcardsData {
 }
 
 class FlashcardsRepo {
-  static const _kKeyV2 = 'flashcards_v2';
-  static const _kKeyV1 = 'flashcards_v1';
+  final FirebaseFirestore _db;
 
-  Future<FlashcardsData> load() async {
-    final prefs = await SharedPreferences.getInstance();
+  FlashcardsRepo({
+    FirebaseFirestore? db,
+  }) : _db = db ?? FirebaseFirestore.instance;
 
-    // MIGRACJA z v1 -> v2
-    final v2raw = prefs.getString(_kKeyV2);
-    if (v2raw == null || v2raw.isEmpty) {
-      final v1raw = prefs.getString(_kKeyV1);
-      if (v1raw != null && v1raw.isNotEmpty) {
-        final list = (jsonDecode(v1raw) as List).cast<Map<String, dynamic>>();
-        final cards = list.map(Flashcard.fromMap).toList(); // folderId będzie null
-        final data = FlashcardsData(folders: const [], cards: cards);
-        await save(data);
-        await prefs.remove(_kKeyV1);
-        return data;
-      }
+  String _localKeyV2(String uid) => 'flashcards_v2_$uid';
 
-      return const FlashcardsData(folders: [], cards: []);
-    }
-
-    final decoded = jsonDecode(v2raw);
-    if (decoded is! Map<String, dynamic>) {
-      return const FlashcardsData(folders: [], cards: []);
-    }
-
-    final foldersRaw = (decoded['folders'] as List? ?? []).cast<Map<String, dynamic>>();
-    final cardsRaw = (decoded['cards'] as List? ?? []).cast<Map<String, dynamic>>();
-
-    final folders = foldersRaw.map(FlashFolder.fromMap).toList();
-    final cards = cardsRaw.map(Flashcard.fromMap).toList();
-
-    return FlashcardsData(folders: folders, cards: cards);
+  CollectionReference<Map<String, dynamic>> _foldersCol(String uid) {
+    return _db.collection('users').doc(uid).collection('flashcardFolders');
   }
 
-  Future<void> save(FlashcardsData data) async {
+  CollectionReference<Map<String, dynamic>> _cardsCol(String uid) {
+    return _db.collection('users').doc(uid).collection('flashcards');
+  }
+
+  Future<FlashcardsData> load(String uid) async {
+    try {
+      final remote = await _loadRemote(uid);
+
+      // Lokalny cache tylko dla konkretnego UID.
+      await _saveLocal(uid, remote);
+
+      return remote;
+    } catch (_) {
+      // Awaryjnie, gdy np. chwilowo nie ma internetu.
+      return _loadLocal(uid);
+    }
+  }
+
+  Future<void> save(String uid, FlashcardsData data) async {
+    await _saveLocal(uid, data);
+    await _saveRemote(uid, data);
+  }
+
+  Future<FlashcardsData> _loadLocal(String uid) async {
     final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_localKeyV2(uid));
+
+    if (raw == null || raw.isEmpty) {
+      return const FlashcardsData(folders: [], cards: []);
+    }
+
+    try {
+      final decoded = jsonDecode(raw);
+
+      if (decoded is! Map) {
+        return const FlashcardsData(folders: [], cards: []);
+      }
+
+      final map = Map<String, dynamic>.from(decoded);
+
+      final foldersRaw = (map['folders'] as List? ?? [])
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+
+      final cardsRaw = (map['cards'] as List? ?? [])
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+
+      final folders = foldersRaw.map(FlashFolder.fromMap).toList();
+      final cards = cardsRaw.map(Flashcard.fromMap).toList();
+
+      return FlashcardsData(folders: folders, cards: cards);
+    } catch (_) {
+      return const FlashcardsData(folders: [], cards: []);
+    }
+  }
+
+  Future<void> _saveLocal(String uid, FlashcardsData data) async {
+    final prefs = await SharedPreferences.getInstance();
+
     final raw = jsonEncode({
       'folders': data.folders.map((f) => f.toMap()).toList(),
       'cards': data.cards.map((c) => c.toMap()).toList(),
     });
-    await prefs.setString(_kKeyV2, raw);
+
+    await prefs.setString(_localKeyV2(uid), raw);
+  }
+
+  Future<FlashcardsData> _loadRemote(String uid) async {
+    final foldersSnap = await _foldersCol(uid)
+        .orderBy(
+          'createdAt',
+          descending: true,
+        )
+        .get();
+
+    final cardsSnap = await _cardsCol(uid)
+        .orderBy(
+          'createdAt',
+          descending: true,
+        )
+        .get();
+
+    final folders = foldersSnap.docs.map((doc) {
+      final data = doc.data();
+
+      return FlashFolder.fromMap({
+        ...data,
+        'id': data['id'] ?? doc.id,
+      });
+    }).toList();
+
+    final cards = cardsSnap.docs.map((doc) {
+      final data = doc.data();
+
+      return Flashcard.fromMap({
+        ...data,
+        'id': data['id'] ?? doc.id,
+      });
+    }).toList();
+
+    return FlashcardsData(folders: folders, cards: cards);
+  }
+
+  Future<void> _saveRemote(String uid, FlashcardsData data) async {
+    final batch = _db.batch();
+
+    final foldersRef = _foldersCol(uid);
+    final cardsRef = _cardsCol(uid);
+
+    final existingFolders = await foldersRef.get();
+    final existingCards = await cardsRef.get();
+
+    final wantedFolderIds = data.folders.map((f) => f.id).toSet();
+    final wantedCardIds = data.cards.map((c) => c.id).toSet();
+
+    for (final doc in existingFolders.docs) {
+      if (!wantedFolderIds.contains(doc.id)) {
+        batch.delete(doc.reference);
+      }
+    }
+
+    for (final doc in existingCards.docs) {
+      if (!wantedCardIds.contains(doc.id)) {
+        batch.delete(doc.reference);
+      }
+    }
+
+    for (final folder in data.folders) {
+      batch.set(
+        foldersRef.doc(folder.id),
+        folder.toMap(),
+        SetOptions(merge: true),
+      );
+    }
+
+    for (final card in data.cards) {
+      batch.set(
+        cardsRef.doc(card.id),
+        card.toMap(),
+        SetOptions(merge: true),
+      );
+    }
+
+    batch.set(
+      _db.collection('users').doc(uid),
+      {
+        'updatedAt': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
+
+    await batch.commit();
   }
 }
