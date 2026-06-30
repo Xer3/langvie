@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -104,6 +105,38 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     }
   }
 
+  Future<void> _forceSaveNicknameAfterRegister({
+    required User user,
+    required String nickname,
+  }) async {
+    final cleanNick = nickname.trim();
+    if (cleanNick.isEmpty) return;
+
+    try {
+      await user.updateDisplayName(cleanNick);
+      await user.reload();
+    } catch (_) {}
+
+    final currentUser = FirebaseAuth.instance.currentUser ?? user;
+
+    await FirebaseFirestore.instance.collection('users').doc(currentUser.uid).set(
+      {
+        'email': currentUser.email,
+        'nickname': cleanNick,
+        'avatarId': 1,
+        'learningLanguage': '',
+        'level': '',
+        'onboardingDone': false,
+        'completedChaptersA': <int>[],
+        'completedChaptersB': <int>[],
+        'completedChaptersC': <int>[],
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
+  }
+
   Future<void> _submit() async {
     final email = _emailCtrl.text.trim();
     final pass = _passCtrl.text;
@@ -114,10 +147,12 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
       setState(() => _err = 'Podaj email.');
       return;
     }
+
     if (!email.contains('@') || !email.contains('.')) {
       setState(() => _err = 'Nieprawidłowy format email.');
       return;
     }
+
     if (pass.isEmpty) {
       setState(() => _err = 'Podaj hasło.');
       return;
@@ -128,18 +163,22 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
         setState(() => _err = 'Podaj nick.');
         return;
       }
+
       if (nick.length < 3) {
         setState(() => _err = 'Nick musi mieć min. 3 znaki.');
         return;
       }
+
       if (pass.length < 6) {
         setState(() => _err = 'Hasło musi mieć min. 6 znaków.');
         return;
       }
+
       if (pass2.isEmpty) {
         setState(() => _err = 'Powtórz hasło.');
         return;
       }
+
       if (pass != pass2) {
         setState(() => _err = 'Hasła nie są takie same.');
         return;
@@ -161,21 +200,52 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
               FirebaseAuth.instance.currentUser,
             );
       } else {
-        await api.register(email: email, password: pass, nickname: nick);
+        ref.read(appStateProvider.notifier).prepareNicknameForRegistration(nick);
+
+        final cred = await api.register(
+          email: email,
+          password: pass,
+          nickname: nick,
+        );
+
+        final registeredUser = FirebaseAuth.instance.currentUser ?? cred.user;
+
+        if (registeredUser == null) {
+          ref.read(appStateProvider.notifier).clearPendingRegistrationNickname();
+          setState(() => _err = 'Nie udało się utworzyć użytkownika.');
+          return;
+        }
+
+        await _forceSaveNicknameAfterRegister(
+          user: registeredUser,
+          nickname: nick,
+        );
 
         await ref.read(appStateProvider.notifier).startOnboardingAfterRegister(
-              FirebaseAuth.instance.currentUser,
+              FirebaseAuth.instance.currentUser ?? registeredUser,
+              fallbackNickname: nick,
+            );
+
+        await ref.read(appStateProvider.notifier).setNickname(nick);
+
+        await _forceSaveNicknameAfterRegister(
+          user: FirebaseAuth.instance.currentUser ?? registeredUser,
+          nickname: nick,
+        );
+
+        await ref.read(appStateProvider.notifier).markLoggedInFromLogin(
+              FirebaseAuth.instance.currentUser ?? registeredUser,
             );
 
         if (mounted) context.go('/onboarding/test');
         return;
       }
     } on FirebaseAuthException catch (e) {
+      ref.read(appStateProvider.notifier).clearPendingRegistrationNickname();
       setState(() => _err = _mapFirebaseError(e));
-    } catch (_) {
-      setState(
-        () => _err = 'Nieprawidłowy email lub hasło (konto może nie istnieć).',
-      );
+    } catch (e) {
+      ref.read(appStateProvider.notifier).clearPendingRegistrationNickname();
+      setState(() => _err = 'Błąd rejestracji/logowania: $e');
     } finally {
       if (mounted) setState(() => _loading = false);
     }

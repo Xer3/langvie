@@ -14,13 +14,44 @@ class AppStorage {
   AppStorage(this._prefs);
 
   String? get emailLocal => _prefs.getString(_kEmail);
-  Future<void> setEmailLocal(String value) async => _prefs.setString(_kEmail, value);
+
+  Future<void> setEmailLocal(String value) async {
+    await _prefs.setString(_kEmail, value);
+  }
 
   String? get nickname => _prefs.getString(_kNickname);
-  Future<void> setNickname(String value) async => _prefs.setString(_kNickname, value);
+
+  Future<void> setNickname(String value) async {
+    await _prefs.setString(_kNickname, value);
+  }
+
+  String _nicknameKeyForUid(String uid) => 'nickname_$uid';
+
+  String? getNicknameForUid(String uid) {
+    final v = _prefs.getString(_nicknameKeyForUid(uid));
+    if (v == null || v.trim().isEmpty) return null;
+    return v.trim();
+  }
+
+  Future<void> setNicknameForUid(String uid, String value) async {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) return;
+
+    await _prefs.setString(_nicknameKeyForUid(uid), trimmed);
+
+    // Zostawiamy też stary klucz jako fallback dla starszych danych.
+    await _prefs.setString(_kNickname, trimmed);
+  }
+
+  Future<void> clearNicknameForUid(String uid) async {
+    await _prefs.remove(_nicknameKeyForUid(uid));
+  }
 
   bool get onboardingDone => _prefs.getBool(_kOnboardingDone) ?? false;
-  Future<void> setOnboardingDone(bool value) async => _prefs.setBool(_kOnboardingDone, value);
+
+  Future<void> setOnboardingDone(bool value) async {
+    await _prefs.setBool(_kOnboardingDone, value);
+  }
 
   String? get learningLanguage {
     final v = _prefs.getString(_kLearningLanguage);
@@ -42,11 +73,9 @@ class AppStorage {
     await _prefs.setString(_kLevel, value);
   }
 
-  // ======= Avatar PER USER (UID) =======
   String _avatarKeyForUid(String uid) => 'avatar_id_$uid';
 
   int getAvatarIdForUid(String uid) {
-    // ✅ 1 = domyślny avatar
     return _prefs.getInt(_avatarKeyForUid(uid)) ?? 1;
   }
 
@@ -58,8 +87,9 @@ class AppStorage {
     await _prefs.remove(_avatarKeyForUid(uid));
   }
 
-  // ======= Completed chapters PER LEVEL =======
-  String _chaptersKeyForLevel(String level) => 'completed_chapters_${level.toUpperCase()}';
+  String _chaptersKeyForLevel(String level) {
+    return 'completed_chapters_${level.toUpperCase()}';
+  }
 
   List<String> getCompletedChaptersForLevel(String level) {
     final key = _chaptersKeyForLevel(level);
@@ -68,6 +98,7 @@ class AppStorage {
     if (v != null) return v;
 
     final legacy = _prefs.getStringList(_kCompletedChaptersLegacy);
+
     if (legacy != null && legacy.isNotEmpty) {
       _prefs.setStringList(key, legacy);
       _prefs.remove(_kCompletedChaptersLegacy);
@@ -77,7 +108,10 @@ class AppStorage {
     return <String>[];
   }
 
-  Future<void> setCompletedChaptersForLevel(String level, List<String> chapters) async {
+  Future<void> setCompletedChaptersForLevel(
+    String level,
+    List<String> chapters,
+  ) async {
     final key = _chaptersKeyForLevel(level);
     await _prefs.setStringList(key, chapters);
   }
@@ -94,8 +128,6 @@ class AppStorage {
     await _prefs.remove(_kCompletedChaptersLegacy);
   }
 
-  // ======= Cleanup =======
-
   Future<void> logoutLocalOnly() async {
     await _prefs.remove(_kEmail);
     await _prefs.remove(_kNickname);
@@ -108,8 +140,13 @@ class AppStorage {
     await clearAllCompletedChapters();
   }
 
-  Future<void> deleteAccountLocalCleanup() async {
+  Future<void> deleteAccountLocalCleanup({String? uid}) async {
     await logoutLocalOnly();
     await clearUserProgress();
+
+    if (uid != null) {
+      await clearAvatarForUid(uid);
+      await clearNicknameForUid(uid);
+    }
   }
 }

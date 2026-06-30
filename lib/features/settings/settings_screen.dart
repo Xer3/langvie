@@ -109,6 +109,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
     final newLevel =
         await ref.read(appStateProvider.notifier).advanceLevelAndResetChapters();
+
     if (newLevel == null) {
       _snack('Nie można już awansować poziomu.');
       return;
@@ -123,10 +124,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }) async {
     try {
       final user = FirebaseAuth.instance.currentUser;
+
       if (user == null) {
         _snack('Brak zalogowanego użytkownika');
         return;
       }
+
+      final uid = user.uid;
 
       final cred = EmailAuthProvider.credential(
         email: email.trim(),
@@ -134,9 +138,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       );
 
       await user.reauthenticateWithCredential(cred);
+
+      await ref.read(appStateProvider.notifier).deleteCurrentUserFirestoreData();
+
       await user.delete();
 
-      await ref.read(appStateProvider.notifier).logoutAfterAccountDeletion();
+      await ref
+          .read(appStateProvider.notifier)
+          .logoutAfterAccountDeletion(uidOverride: uid);
+
       _snack('Konto usunięte');
     } on FirebaseAuthException catch (e) {
       final code = e.code;
@@ -145,6 +155,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         _snack('Nieprawidłowe hasło');
         return;
       }
+
       if (code == 'requires-recent-login') {
         _snack('Zaloguj się ponownie i spróbuj jeszcze raz');
         return;
@@ -158,6 +169,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _showDeleteDialog(AppState state) async {
     final email = state.email;
+
     if (email == null) {
       _snack('Brak emaila użytkownika');
       return;
@@ -199,10 +211,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
     if (ok == true) {
       final pass = passCtrl.text;
+
       if (pass.trim().isEmpty) {
         _snack('Podaj hasło');
         return;
       }
+
       await _deleteAccountWithPassword(email: email, password: pass);
     }
   }
@@ -221,7 +235,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           selectedId: currentId,
           onPick: (id) async {
             await ref.read(appStateProvider.notifier).setAvatarId(id);
+
             if (mounted) Navigator.pop(context);
+
             _snack('Avatar zapisany');
           },
         );
@@ -261,18 +277,21 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  Set<int> _parseSet(List<String> raw) =>
-      raw.map((e) => int.tryParse(e)).whereType<int>().toSet();
+  Set<int> _parseSet(List<String> raw) {
+    return raw.map((e) => int.tryParse(e)).whereType<int>().toSet();
+  }
 
   bool _levelCompleted(Set<int> completed) {
     for (var i = 1; i <= lessonsPerLevel; i++) {
       if (!completed.contains(i)) return false;
     }
+
     return true;
   }
 
-  int _countCompleted(Set<int> completed) =>
-      completed.where((x) => x >= 1 && x <= lessonsPerLevel).length;
+  int _countCompleted(Set<int> completed) {
+    return completed.where((x) => x >= 1 && x <= lessonsPerLevel).length;
+  }
 
   Widget _statsTile({
     required String level,
@@ -287,7 +306,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: ListTile(
         leading: CircleAvatar(
-          child: Text(level, style: const TextStyle(fontWeight: FontWeight.w900)),
+          child: Text(
+            level,
+            style: const TextStyle(fontWeight: FontWeight.w900),
+          ),
         ),
         title: Text(
           isCurrent ? 'Poziom $level (aktualny)' : 'Poziom $level',
@@ -305,21 +327,25 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
+  String? _profileDisplayName(AppState state) {
+    final nick = state.nickname?.trim();
+
+    if (nick != null && nick.isNotEmpty) {
+      return nick;
+    }
+
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(appStateProvider);
 
-    final displayName =
-        (state.nickname != null && state.nickname!.trim().isNotEmpty)
-            ? state.nickname!.trim()
-            : (state.email ?? 'Użytkownik');
-
+    final displayName = _profileDisplayName(state);
     final currentLevel = (state.level ?? 'A').toUpperCase();
     final storageAsync = ref.watch(storageProvider);
 
     final avatarId = state.avatarId;
-
-    // ✅ TO JEST TEN SAM NIEBIESKI CO NAV BAR (spójność)
     final primaryBlue = AppColors.blue;
 
     return Scaffold(
@@ -329,7 +355,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         children: [
           Card(
             elevation: 0,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+            ),
             child: Padding(
               padding: const EdgeInsets.all(18),
               child: Column(
@@ -350,21 +378,38 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  Text(
-                    'Witaj, $displayName',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w900,
-                        ),
-                    textAlign: TextAlign.center,
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 180),
+                    child: displayName == null
+                        ? Text(
+                            'Wczytywanie profilu...',
+                            key: const ValueKey('loading_profile_name'),
+                            style:
+                                Theme.of(context).textTheme.titleLarge?.copyWith(
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                            textAlign: TextAlign.center,
+                          )
+                        : Text(
+                            'Witaj, $displayName',
+                            key: ValueKey('profile_name_$displayName'),
+                            style:
+                                Theme.of(context).textTheme.titleLarge?.copyWith(
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                            textAlign: TextAlign.center,
+                          ),
                   ),
                   const SizedBox(height: 6),
                   Text('Poziom: $currentLevel'),
                   if (state.email != null) ...[
                     const SizedBox(height: 4),
-                    Text(state.email!, style: Theme.of(context).textTheme.bodySmall),
+                    Text(
+                      state.email!,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
                   ],
                   const SizedBox(height: 12),
-
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton(
@@ -383,33 +428,53 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
             ),
           ),
-
           const SizedBox(height: 12),
-
           Card(
             elevation: 0,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+            ),
             child: Theme(
-              data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+              data: Theme.of(context).copyWith(
+                dividerColor: Colors.transparent,
+              ),
               child: ExpansionTile(
                 leading: const Icon(Icons.query_stats_outlined),
-                title: const Text('Statystyki', style: TextStyle(fontWeight: FontWeight.w900)),
+                title: const Text(
+                  'Statystyki',
+                  style: TextStyle(fontWeight: FontWeight.w900),
+                ),
                 subtitle: const Text('Postęp A / B / C'),
                 childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
                 children: [
                   storageAsync.when(
                     data: (storage) {
-                      final a = _parseSet(storage.getCompletedChaptersForLevel('A'));
-                      final b = _parseSet(storage.getCompletedChaptersForLevel('B'));
-                      final c = _parseSet(storage.getCompletedChaptersForLevel('C'));
+                      final a =
+                          _parseSet(storage.getCompletedChaptersForLevel('A'));
+                      final b =
+                          _parseSet(storage.getCompletedChaptersForLevel('B'));
+                      final c =
+                          _parseSet(storage.getCompletedChaptersForLevel('C'));
 
                       return Column(
                         children: [
-                          _statsTile(level: 'A', completed: a, isCurrent: currentLevel == 'A'),
+                          _statsTile(
+                            level: 'A',
+                            completed: a,
+                            isCurrent: currentLevel == 'A',
+                          ),
                           const SizedBox(height: 10),
-                          _statsTile(level: 'B', completed: b, isCurrent: currentLevel == 'B'),
+                          _statsTile(
+                            level: 'B',
+                            completed: b,
+                            isCurrent: currentLevel == 'B',
+                          ),
                           const SizedBox(height: 10),
-                          _statsTile(level: 'C', completed: c, isCurrent: currentLevel == 'C'),
+                          _statsTile(
+                            level: 'C',
+                            completed: c,
+                            isCurrent: currentLevel == 'C',
+                          ),
                         ],
                       );
                     },
@@ -426,9 +491,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
             ),
           ),
-
           const SizedBox(height: 12),
-
           _sectionTitle('Ustawienia kursu'),
           _tile(
             icon: Icons.edit_outlined,
@@ -445,10 +508,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           const SizedBox(height: 10),
           Card(
             elevation: 0,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
             child: ListTile(
               leading: const Icon(Icons.school_outlined),
-              title: const Text('Zmień poziom kursu', style: TextStyle(fontWeight: FontWeight.w800)),
+              title: const Text(
+                'Zmień poziom kursu',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
               subtitle: Text('Aktualnie: $currentLevel'),
               trailing: DropdownButton<String>(
                 value: currentLevel,
@@ -465,22 +533,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
             ),
           ),
-
           const SizedBox(height: 14),
-
           _sectionTitle('Konto'),
           _tile(
             icon: Icons.lock_reset_outlined,
             title: 'Zmień hasło',
             subtitle: 'Wyśle link na maila',
             enabled: state.email != null,
-            onTap: state.email == null ? null : () => _resetPassword(state.email!),
+            onTap:
+                state.email == null ? null : () => _resetPassword(state.email!),
           ),
           const SizedBox(height: 10),
-
           Card(
             elevation: 0,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
             child: ListTile(
               enabled: state.email != null,
               leading: const Icon(Icons.delete_outline, color: dangerRed),
@@ -493,18 +561,21 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
               subtitle: const Text('Wymaga potwierdzenia hasłem'),
               trailing: const Icon(Icons.chevron_right, color: dangerRed),
-              onTap: (state.email != null) ? () => _showDeleteDialog(state) : null,
+              onTap: state.email != null ? () => _showDeleteDialog(state) : null,
             ),
           ),
-
           const SizedBox(height: 18),
-
           Card(
             elevation: 0,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
             child: ListTile(
               leading: const Icon(Icons.logout),
-              title: const Text('Wyloguj', style: TextStyle(fontWeight: FontWeight.w900)),
+              title: const Text(
+                'Wyloguj',
+                style: TextStyle(fontWeight: FontWeight.w900),
+              ),
               trailing: const Icon(Icons.chevron_right),
               onTap: () async {
                 await ref.read(appStateProvider.notifier).logout();

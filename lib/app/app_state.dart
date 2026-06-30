@@ -92,8 +92,25 @@ class AppStateNotifier extends StateNotifier<AppState> {
   final Ref _ref;
   StreamSubscription<User?>? _authSub;
 
+  String? _pendingRegisterUid;
+  String? _pendingRegisterNickname;
+
   AppStateNotifier(this._ref) : super(const AppState.initial()) {
     _init();
+  }
+
+  void prepareNicknameForRegistration(String nickname) {
+    final trimmed = nickname.trim();
+
+    if (trimmed.isEmpty) return;
+
+    _pendingRegisterUid = null;
+    _pendingRegisterNickname = trimmed;
+  }
+
+  void clearPendingRegistrationNickname() {
+    _pendingRegisterUid = null;
+    _pendingRegisterNickname = null;
   }
 
   DocumentReference<Map<String, dynamic>> _userDoc(String uid) {
@@ -147,26 +164,52 @@ class AppStateNotifier extends StateNotifier<AppState> {
     return trimmed;
   }
 
+  String? _validNickname(String? value, {String? email}) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) return null;
+
+    final normalizedEmail = email?.trim().toLowerCase();
+
+    if (normalizedEmail != null &&
+        normalizedEmail.isNotEmpty &&
+        trimmed.toLowerCase() == normalizedEmail) {
+      return null;
+    }
+
+    return trimmed;
+  }
+
+  String? _pendingNicknameForUid(String uid) {
+    final pending = _validNickname(_pendingRegisterNickname);
+
+    if (pending == null) return null;
+
+    if (_pendingRegisterUid == null) return pending;
+
+    if (_pendingRegisterUid == uid) return pending;
+
+    return null;
+  }
+
   String? _bestNickname({
     required User? user,
     required String? firestoreNick,
     required String? localNick,
+    required String? pendingNick,
   }) {
-    final displayName = user?.displayName?.trim();
+    final email = user?.email;
 
-    if (displayName != null && displayName.isNotEmpty) {
-      return displayName;
-    }
+    final pending = _validNickname(pendingNick, email: email);
+    if (pending != null) return pending;
 
-    final remote = firestoreNick?.trim();
-    if (remote != null && remote.isNotEmpty) {
-      return remote;
-    }
+    final remote = _validNickname(firestoreNick, email: email);
+    if (remote != null) return remote;
 
-    final local = localNick?.trim();
-    if (local != null && local.isNotEmpty) {
-      return local;
-    }
+    final displayName = _validNickname(user?.displayName, email: email);
+    if (displayName != null) return displayName;
+
+    final local = _validNickname(localNick, email: email);
+    if (local != null) return local;
 
     return null;
   }
@@ -182,16 +225,55 @@ class AppStateNotifier extends StateNotifier<AppState> {
     super.dispose();
   }
 
+  Future<void> _deleteCollection(String uid, String collectionName) async {
+    final col = _userDoc(uid).collection(collectionName);
+
+    while (true) {
+      final snap = await col.limit(450).get();
+
+      if (snap.docs.isEmpty) break;
+
+      final batch = FirebaseFirestore.instance.batch();
+
+      for (final doc in snap.docs) {
+        batch.delete(doc.reference);
+      }
+
+      await batch.commit();
+    }
+  }
+
+  Future<void> _deleteUserFirestoreData(String uid) async {
+    await _deleteCollection(uid, 'flashcardFolders');
+    await _deleteCollection(uid, 'flashcards');
+
+    await _userDoc(uid).delete();
+  }
+
+  Future<void> deleteCurrentUserFirestoreData() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    await _deleteUserFirestoreData(user.uid);
+  }
+
   Future<Map<String, dynamic>> _localDataForNewFirestoreUser({
     required User user,
     required AppStorage storage,
   }) async {
-    final displayName = user.displayName?.trim();
-    final localNick = storage.nickname?.trim();
+    final pendingNick = _pendingNicknameForUid(user.uid);
 
-    final nickname = (displayName != null && displayName.isNotEmpty)
-        ? displayName
-        : (localNick != null && localNick.isNotEmpty ? localNick : '');
+    final displayName = _validNickname(
+      user.displayName,
+      email: user.email,
+    );
+
+    final localNick = _validNickname(
+      storage.getNicknameForUid(user.uid),
+      email: user.email,
+    );
+
+    final nickname = pendingNick ?? displayName ?? localNick ?? '';
 
     final completedA = _parseChapters(storage.getCompletedChaptersForLevel('A'));
     final completedB = _parseChapters(storage.getCompletedChaptersForLevel('B'));
@@ -234,7 +316,11 @@ class AppStateNotifier extends StateNotifier<AppState> {
     required AppStorage storage,
     required Map<String, dynamic> data,
   }) async {
-    final nickname = _asNullableString(data['nickname']);
+    final nickname = _validNickname(
+      data['nickname'] is String ? data['nickname'] as String : null,
+      email: user.email,
+    );
+
     final learningLanguage = _asNullableString(data['learningLanguage']);
     final level = _asNullableString(data['level']);
     final onboardingDone = data['onboardingDone'] == true;
@@ -246,7 +332,7 @@ class AppStateNotifier extends StateNotifier<AppState> {
     await storage.setLevel(level ?? '');
 
     if (nickname != null && nickname.isNotEmpty) {
-      await storage.setNickname(nickname);
+      await storage.setNicknameForUid(user.uid, nickname);
     }
 
     await storage.setCompletedChaptersForLevel(
@@ -303,16 +389,38 @@ class AppStateNotifier extends StateNotifier<AppState> {
     final onboardingDone = data['onboardingDone'] == true;
     final avatarId = _asInt(data['avatarId'], 1);
 
+    final pendingNick = _pendingNicknameForUid(refreshedUser.uid);
+
+    final bestNick = _bestNickname(
+      user: refreshedUser,
+      firestoreNick: firestoreNick,
+      localNick: storage.getNicknameForUid(refreshedUser.uid),
+      pendingNick: pendingNick,
+    );
+
+    if (bestNick != null && bestNick.isNotEmpty) {
+      try {
+        await refreshedUser.updateDisplayName(bestNick);
+        await refreshedUser.reload();
+      } catch (_) {}
+
+      try {
+        await _userDoc(refreshedUser.uid).set({
+          'nickname': bestNick,
+          'email': refreshedUser.email,
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
+        await storage.setNicknameForUid(refreshedUser.uid, bestNick);
+      } catch (_) {}
+    }
+
     return AppState(
       isReady: true,
       isLoggedIn: true,
       needsOnboarding: !onboardingDone,
       email: refreshedUser.email,
-      nickname: _bestNickname(
-        user: refreshedUser,
-        firestoreNick: firestoreNick,
-        localNick: storage.nickname,
-      ),
+      nickname: bestNick,
       learningLanguage: learningLanguage,
       level: level,
       completedChapters: completed,
@@ -341,6 +449,8 @@ class AppStateNotifier extends StateNotifier<AppState> {
   }
 
   Future<void> markLoggedInFromLogin(User? user) async {
+    clearPendingRegistrationNickname();
+
     if (user == null) {
       state = const AppState.initial().copyWith(isReady: true);
       return;
@@ -349,7 +459,10 @@ class AppStateNotifier extends StateNotifier<AppState> {
     state = await _stateFromFirestoreUser(user);
   }
 
-  Future<void> startOnboardingAfterRegister(User? user) async {
+  Future<void> startOnboardingAfterRegister(
+    User? user, {
+    String? fallbackNickname,
+  }) async {
     if (user == null) return;
 
     final storage = await _ref.read(storageProvider.future);
@@ -359,7 +472,34 @@ class AppStateNotifier extends StateNotifier<AppState> {
     } catch (_) {}
 
     final refreshedUser = FirebaseAuth.instance.currentUser ?? user;
-    final displayName = refreshedUser.displayName?.trim();
+
+    final fallback = _validNickname(
+      fallbackNickname,
+      email: refreshedUser.email,
+    );
+
+    if (fallback != null && fallback.isNotEmpty) {
+      _pendingRegisterUid = refreshedUser.uid;
+      _pendingRegisterNickname = fallback;
+    }
+
+    final pendingNick = _pendingNicknameForUid(refreshedUser.uid);
+
+    final displayName = _validNickname(
+      refreshedUser.displayName,
+      email: refreshedUser.email,
+    );
+
+    final nickname = pendingNick ?? fallback ?? displayName ?? '';
+
+    if (nickname.isNotEmpty) {
+      try {
+        await refreshedUser.updateDisplayName(nickname);
+        await refreshedUser.reload();
+      } catch (_) {}
+
+      await storage.setNicknameForUid(refreshedUser.uid, nickname);
+    }
 
     await storage.setOnboardingDone(false);
     await storage.setLearningLanguage('');
@@ -367,13 +507,9 @@ class AppStateNotifier extends StateNotifier<AppState> {
     await storage.clearAllCompletedChapters();
     await storage.setAvatarIdForUid(refreshedUser.uid, 1);
 
-    if (displayName != null && displayName.isNotEmpty) {
-      await storage.setNickname(displayName);
-    }
-
     await _userDoc(refreshedUser.uid).set({
       'email': refreshedUser.email,
-      'nickname': displayName ?? '',
+      'nickname': nickname,
       'avatarId': 1,
       'learningLanguage': '',
       'level': '',
@@ -389,8 +525,7 @@ class AppStateNotifier extends StateNotifier<AppState> {
       isReady: true,
       isLoggedIn: true,
       email: refreshedUser.email,
-      nickname:
-          displayName != null && displayName.isNotEmpty ? displayName : null,
+      nickname: nickname.isNotEmpty ? nickname : null,
       learningLanguage: null,
       level: null,
       completedChapters: <int>{},
@@ -492,24 +627,28 @@ class AppStateNotifier extends StateNotifier<AppState> {
     }
 
     final storage = await _ref.read(storageProvider.future);
-    await storage.setNickname(trimmed);
 
     final refreshedUser = FirebaseAuth.instance.currentUser;
 
     if (refreshedUser != null) {
+      await storage.setNicknameForUid(refreshedUser.uid, trimmed);
+
       await _userDoc(refreshedUser.uid).set({
         'nickname': trimmed,
         'email': refreshedUser.email,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
+    } else {
+      await storage.setNickname(trimmed);
     }
 
-    final firebaseNick = refreshedUser?.displayName?.trim();
+    final firebaseNick = _validNickname(
+      refreshedUser?.displayName,
+      email: refreshedUser?.email,
+    );
 
     state = state.copyWith(
-      nickname: firebaseNick != null && firebaseNick.isNotEmpty
-          ? firebaseNick
-          : trimmed,
+      nickname: firebaseNick ?? trimmed,
     );
   }
 
@@ -586,6 +725,8 @@ class AppStateNotifier extends StateNotifier<AppState> {
   }
 
   Future<void> logout() async {
+    clearPendingRegistrationNickname();
+
     try {
       await FirebaseAuth.instance.signOut();
     } catch (_) {}
@@ -596,19 +737,10 @@ class AppStateNotifier extends StateNotifier<AppState> {
     state = const AppState.initial().copyWith(isReady: true);
   }
 
-  Future<void> logoutAfterAccountDeletion() async {
-    final user = FirebaseAuth.instance.currentUser;
-    final uid = user?.uid;
+  Future<void> logoutAfterAccountDeletion({String? uidOverride}) async {
+    clearPendingRegistrationNickname();
 
-    if (uid != null) {
-      try {
-        await _userDoc(uid).delete();
-      } catch (_) {}
-
-      try {
-        await storageProvider.future;
-      } catch (_) {}
-    }
+    final uid = uidOverride ?? FirebaseAuth.instance.currentUser?.uid;
 
     try {
       await FirebaseAuth.instance.signOut();
@@ -616,11 +748,7 @@ class AppStateNotifier extends StateNotifier<AppState> {
 
     final storage = await _ref.read(storageProvider.future);
 
-    if (uid != null) {
-      await storage.clearAvatarForUid(uid);
-    }
-
-    await storage.deleteAccountLocalCleanup();
+    await storage.deleteAccountLocalCleanup(uid: uid);
 
     state = const AppState.initial().copyWith(isReady: true);
   }
